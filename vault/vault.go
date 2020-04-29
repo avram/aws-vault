@@ -128,7 +128,6 @@ func NewSSORoleCredentialsProvider(k keyring.Keyring, config *Config) (credentia
 	}
 
 	ssoOIDCProvider := &SSOOIDCProvider{
-		Keyring:    &CredentialKeyring{k},
 		OIDCClient: ssooidc.New(sess),
 		StartURL:   config.SSOStartURL,
 	}

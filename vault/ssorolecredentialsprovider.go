@@ -1,13 +1,11 @@
 package vault
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
-	"github.com/99designs/keyring"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -91,12 +89,6 @@ func (p *SSORoleCredentialsProvider) GetRoleCredentials() (*sts.Credentials, err
 	return creds, nil
 }
 
-type SSOClientCredentials struct {
-	ID         string
-	Secret     string
-	Expiration time.Time
-}
-
 type SSOAccessToken struct {
 	Token      string
 	Expiration time.Time
@@ -104,90 +96,34 @@ type SSOAccessToken struct {
 
 type SSOOIDCProvider struct {
 	OIDCClient           SSOOIDCClient
-	Keyring              *CredentialKeyring
 	StartURL             string
 	DisableSystemBrowser bool
 }
 
 func (p *SSOOIDCProvider) GetAccessToken() (*SSOAccessToken, error) {
-	var (
-		creds = &struct {
-			Token  *SSOAccessToken
-			Client *SSOClientCredentials
-		}{
-			Client: &SSOClientCredentials{},
-			Token:  &SSOAccessToken{},
-		}
-		credsUpdated bool
-	)
-
-	item, err := p.Keyring.Keyring.Get(p.StartURL)
-	if err != nil && err != keyring.ErrKeyNotFound {
-		return nil, err
-	}
-
-	if item.Data != nil {
-		if err = json.Unmarshal(item.Data, &creds); err != nil {
-			return nil, fmt.Errorf("Invalid data in keyring: %v", err)
-		}
-	}
-
-	if creds.Client.Expiration.Before(time.Now()) {
-		creds.Client, err = p.registerNewClient()
-		if err != nil {
-			return nil, err
-		}
-		log.Printf("Created new SSO client for %s (expires at: %s)", p.StartURL, creds.Client.Expiration.String())
-		credsUpdated = true
-	}
-
-	if creds.Token.Expiration.Before(time.Now()) {
-		creds.Token, err = p.createClientToken(creds.Client)
-		if err != nil {
-			return nil, err
-		}
-		log.Printf("Created new SSO access token for %s (expires at: %s)", p.StartURL, creds.Token.Expiration.String())
-		credsUpdated = true
-	}
-
-	if credsUpdated {
-		bytes, err := json.Marshal(creds)
-		if err != nil {
-			return nil, err
-		}
-		err = p.Keyring.Keyring.Set(keyring.Item{
-			Key:                         p.StartURL,
-			Label:                       fmt.Sprintf("aws-vault (%s)", p.StartURL),
-			Data:                        bytes,
-			KeychainNotTrustApplication: true,
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return creds.Token, nil
-}
-
-func (p *SSOOIDCProvider) registerNewClient() (*SSOClientCredentials, error) {
-	c, err := p.OIDCClient.RegisterClient(&ssooidc.RegisterClientInput{
+	client, err := p.OIDCClient.RegisterClient(&ssooidc.RegisterClientInput{
 		ClientName: aws.String(ssoClientName),
 		ClientType: aws.String(ssoClientType),
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &SSOClientCredentials{
-		ID:         aws.StringValue(c.ClientId),
-		Secret:     aws.StringValue(c.ClientSecret),
-		Expiration: time.Unix(aws.Int64Value(c.ClientSecretExpiresAt), 0),
-	}, nil
+	log.Printf("Created new SSO client for %s (expires at: %s)", p.StartURL, time.Unix(aws.Int64Value(client.ClientSecretExpiresAt), 0))
+
+	token, err := p.createClientToken(client)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Created new SSO access token for %s (expires at: %s)", p.StartURL, token.Expiration.String())
+
+	// FIXME: we're ignoring the expiry and not caching
+	return token, nil
 }
 
-func (p *SSOOIDCProvider) createClientToken(creds *SSOClientCredentials) (*SSOAccessToken, error) {
+func (p *SSOOIDCProvider) createClientToken(creds *ssooidc.RegisterClientOutput) (*SSOAccessToken, error) {
 	auth, err := p.OIDCClient.StartDeviceAuthorization(&ssooidc.StartDeviceAuthorizationInput{
-		ClientId:     aws.String(creds.ID),
-		ClientSecret: aws.String(creds.Secret),
+		ClientId:     creds.ClientId,
+		ClientSecret: creds.ClientSecret,
 		StartUrl:     aws.String(p.StartURL),
 	})
 	if err != nil {
@@ -213,8 +149,8 @@ func (p *SSOOIDCProvider) createClientToken(creds *SSOClientCredentials) (*SSOAc
 
 	for {
 		t, err := p.OIDCClient.CreateToken(&ssooidc.CreateTokenInput{
-			ClientId:     aws.String(creds.ID),
-			ClientSecret: aws.String(creds.Secret),
+			ClientId:     creds.ClientId,
+			ClientSecret: creds.ClientSecret,
 			DeviceCode:   auth.DeviceCode,
 			GrantType:    aws.String(oAuthTokenGrantType),
 		})

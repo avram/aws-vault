@@ -7,7 +7,6 @@ import (
 
 	"github.com/99designs/aws-vault/v5/vault"
 	"github.com/99designs/aws-vault/v5/vault/vaultfakes"
-	"github.com/99designs/keyring"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sso"
@@ -36,15 +35,6 @@ func TestSSORoleCredentialsProvider(t *testing.T) {
 				registerClientCalls:     1,
 				createTokenCalls:        1,
 				startAuthorizationCalls: 1,
-				getRoleCredentialsCalls: 1,
-			},
-		},
-		{
-			name:             "uses cache if it exists",
-			startURL:         "https://cached.awsapps.com/start",
-			tokenExpiration:  time.Now().Add(1 * time.Hour),
-			clientExpiration: time.Now().Add(1 * time.Hour),
-			expectations: &expectations{
 				getRoleCredentialsCalls: 1,
 			},
 		},
@@ -99,15 +89,7 @@ func TestSSORoleCredentialsProvider(t *testing.T) {
 				},
 			}, nil)
 
-			fakeKeyring := keyring.NewArrayKeyring([]keyring.Item{
-				{
-					Key:  "https://cached.awsapps.com/start",
-					Data: []byte(newTestCredentialsData(t, tt.tokenExpiration, tt.clientExpiration)),
-				},
-			})
-
 			ssoOIDCProvider := &vault.SSOOIDCProvider{
-				Keyring:              &vault.CredentialKeyring{Keyring: fakeKeyring},
 				OIDCClient:           fakeOIDCClient,
 				StartURL:             tt.startURL,
 				DisableSystemBrowser: true,
